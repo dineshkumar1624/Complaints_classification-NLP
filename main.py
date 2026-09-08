@@ -31,16 +31,19 @@ label_encoder = None
 
 def load_artifacts():
     global model, vectorizer, label_encoder
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"Model file '{MODEL_PATH}' not found in root directory.")
+    path = MODEL_PATH
+    if not os.path.exists(path):
+        path = os.path.join("backend", "best_complaint_model.pkl")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Model file '{MODEL_PATH}' not found in root or backend directory.")
     
-    with open(MODEL_PATH, "rb") as f:
+    with open(path, "rb") as f:
         data = pickle.load(f)
         
     model = data["model"]
     vectorizer = data["vectorizer"]
     label_encoder = data["label_encoder"]
-    print("[INFO] ML model, vectorizer, and label encoder loaded successfully.")
+    print(f"[INFO] ML model, vectorizer, and label encoder loaded successfully from {path}.")
 
 # Load model artifacts on startup
 @app.on_event("startup")

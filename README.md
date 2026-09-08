@@ -253,7 +253,7 @@ python -m uvicorn app:app --reload
 
 The backend will run at:
 
-http://127.0.0.1:8000
+http://127.0.0.1:8001
 🎨 Frontend Setup
 
 Open another terminal and navigate to:

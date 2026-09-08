@@ -1,7 +1,9 @@
 from pathlib import Path
 import pickle
+import re
+from typing import Dict, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -23,10 +25,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,6 +38,8 @@ app.add_middleware(
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best_complaint_model.pkl"
+if not MODEL_PATH.exists():
+    MODEL_PATH = BASE_DIR.parent / "best_complaint_model.pkl"
 
 with open(MODEL_PATH, "rb") as file:
     model_package = pickle.load(file)
@@ -48,25 +49,46 @@ with open(MODEL_PATH, "rb") as file:
 model = model_package["model"]
 vectorizer = model_package["vectorizer"]
 label_encoder = model_package["label_encoder"]
-categories = model_package["categories"]
+categories = model_package.get("categories", [])
+
+
+def clean_text(text: str) -> str:
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www\S+|https\S+", " ", text)
+    text = re.sub(r"\S+@\S+", " ", text)
+    text = re.sub(r"[^a-zA-Z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 # --------------------------------------------------
-# Request model
+# Request & Response models
 # --------------------------------------------------
 
 class ComplaintRequest(BaseModel):
-    text: str
+    complaint: Optional[str] = None
+    text: Optional[str] = None
+
+
+class PredictionResponse(BaseModel):
+    category: str
+    confidence: float
+    probabilities: Dict[str, float]
+    cleaned_text: str
 
 
 # --------------------------------------------------
-# Home endpoint
+# Home & Health endpoints
 # --------------------------------------------------
 
 @app.get("/")
-def home():
+@app.get("/health")
+def health_check():
     return {
-        "message": "Customer Complaint Classification API is running"
+        "status": "healthy",
+        "message": "Customer Complaint Classification API is running",
+        "model_loaded": model is not None,
+        "model_type": "Logistic Regression + TF-IDF"
     }
 
 
@@ -74,53 +96,38 @@ def home():
 # Prediction endpoint
 # --------------------------------------------------
 
-@app.post("/predict")
+@app.post("/predict", response_model=PredictionResponse)
 def predict_complaint(request: ComplaintRequest):
+    raw_text = request.complaint if request.complaint is not None else request.text
+    if not raw_text or not raw_text.strip():
+        raise HTTPException(status_code=400, detail="Complaint text cannot be empty.")
 
-    text = request.text.strip()
-
-    # Check empty input
-    if not text:
-        return {
-            "error": "Complaint text cannot be empty"
-        }
+    # Preprocess text
+    cleaned = clean_text(raw_text)
 
     # Convert complaint text into TF-IDF features
-    text_features = vectorizer.transform([text])
+    text_features = vectorizer.transform([cleaned])
 
     # Predict encoded class
     predicted_class = model.predict(text_features)[0]
 
     # Convert encoded class back to category name
-    predicted_category = label_encoder.inverse_transform(
-        [predicted_class]
-    )[0]
+    predicted_category = label_encoder.inverse_transform([predicted_class])[0]
 
     # Get probabilities
     probabilities = model.predict_proba(text_features)[0]
 
     # Map probabilities to category names
     probability_dict = {}
-
     for class_id, probability in zip(model.classes_, probabilities):
+        category = label_encoder.inverse_transform([class_id])[0]
+        probability_dict[category] = round(float(probability) * 100, 2)
 
-        category = label_encoder.inverse_transform(
-            [class_id]
-        )[0]
+    top_confidence = max(probability_dict.values())
 
-        probability_dict[category] = round(
-            float(probability) * 100,
-            2
-        )
-
-    # Confidence of predicted category
-    confidence = round(
-        float(max(probabilities)) * 100,
-        2
-    )
-
-    return {
-        "category": predicted_category,
-        "confidence": confidence,
-        "probabilities": probability_dict
-    }
+    return PredictionResponse(
+        category=predicted_category,
+        confidence=top_confidence,
+        probabilities=probability_dict,
+        cleaned_text=cleaned
+    )
